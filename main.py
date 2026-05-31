@@ -108,7 +108,7 @@ class ScalableImageLabel(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.is_drawing and self.start_pos and self.end_pos:
+        if self.start_pos and self.end_pos:
             painter = QPainter(self)
             pen = QPen(QColor(0, 255, 0), 2, Qt.DashLine)
             painter.setPen(pen)
