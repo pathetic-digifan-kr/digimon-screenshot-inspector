@@ -1,299 +1,300 @@
 import sys
 import os
+import cv2
+import difflib
+import numpy as np
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, 
+                             QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView)
+from PySide6.QtCore import Qt, QRect
+from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
+from paddleocr import PaddleOCR
 
-# 💡 PaddleOCR 특유의 윈도우 OpenMP 충돌 에러 방지용 환경 변수 세팅 (필수)
+# 💡 최신 PaddlePaddle / PaddleX oneDNN 가속 버그 완벽 차단 플래그
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-# 💡 [추가] 인텔 oneDNN CPU 가속 버그 우회를 위해 가속 기능을 강제로 끕니다.
 os.environ["FLAGS_use_onednn"] = "0"
 os.environ["FLAGS_use_mkldnn"] = "0"
-os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"  # 👈 최신 PaddleX 버그 브레이커 플래그
+os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
 
-import cv2
-import numpy as np
-from paddleocr import PaddleOCR  # 👈 PaddleOCR 임포트
-
-from PySide6.QtWidgets import (QApplication, QMainWindow, QLabel, QVBoxLayout, 
-                             QHBoxLayout, QWidget, QPushButton, QFileDialog)
-from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
-from PySide6.QtCore import Qt, QPoint, QRect
-
-
-# 1. 마우스 드래그 및 반응형 사각형 렌더링이 가능한 커스텀 라벨 클래스
-class ResizableImageLabel(QLabel):
+class ScalableImageLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.main_window = parent
-        self.begin = QPoint()
-        self.end = QPoint()
+        self.setMouseTracking(True)
+        self.orig_pixmap = None
+        self.start_pos = None
+        self.end_pos = None
         self.is_drawing = False
-        self.orig_image_rect = QRect() 
+        self.orig_image_rect = QRect()
 
-    def get_image_render_rect(self):
-        if not self.pixmap() or self.pixmap().isNull():
-            return QRect()
-        pix_w = self.pixmap().width()
-        pix_h = self.pixmap().height()
-        start_x = (self.width() - pix_w) // 2
-        start_y = (self.height() - pix_h) // 2
-        return QRect(start_x, start_y, pix_w, pix_h)
+    def set_opencv_image(self, cv_img):
+        # OpenCV BGR -> QImage RGB 변환 후 픽스맵 저장
+        h, w, ch = cv_img.shape
+        bytes_per_line = ch * w
+        q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+        self.orig_pixmap = QPixmap.fromImage(q_img)
+        self.update_pixmap()
+        
+    def update_pixmap(self):
+        if self.orig_pixmap is None:
+            return
+
+        scaled_pixmap = self.orig_pixmap.scaled(
+            self.width() - 20, 
+            self.height() - 20,
+            Qt.AspectRatioMode.KeepAspectRatio, 
+            Qt.TransformationMode.SmoothTransformation
+        )
+        self.setPixmap(scaled_pixmap)
+
+    def resizeEvent(self, event):
+        if self.orig_pixmap is not None:
+            self.update_pixmap()
+        super().resizeEvent(event)
+
+    def get_scale_factors(self):
+        if not self.orig_pixmap or not self.pixmap():
+            return 1.0, 1.0, 0, 0
+        
+        orig_w = self.orig_pixmap.width()
+        orig_h = self.orig_pixmap.height()
+        disp_w = self.pixmap().width()
+        disp_h = self.pixmap().height()
+        
+        offset_x = (self.width() - disp_w) // 2
+        offset_y = (self.height() - disp_h) // 2
+        
+        scale_x = orig_w / disp_w
+        scale_y = orig_h / disp_h
+        return scale_x, scale_y, offset_x, offset_y
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.main_window.cv_image is not None:
-            render_rect = self.get_image_render_rect()
-            pos = event.position().toPoint()
-            if render_rect.contains(pos):
-                self.begin = pos
-                self.end = pos
-                self.is_drawing = True
-                self.update()
+        if event.button() == Qt.LeftButton:
+            self.start_pos = event.pos()
+            self.is_drawing = True
 
     def mouseMoveEvent(self, event):
         if self.is_drawing:
-            render_rect = self.get_image_render_rect()
-            pos = event.position().toPoint()
-            x = max(render_rect.left(), min(pos.x(), render_rect.right()))
-            y = max(render_rect.top(), min(pos.y(), render_rect.bottom()))
-            self.end = QPoint(x, y)
+            self.end_pos = event.pos()
             self.update()
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.is_drawing:
+        if event.button() == Qt.LeftButton and self.is_drawing:
+            self.end_pos = event.pos()
             self.is_drawing = False
-            render_rect = self.get_image_render_rect()
-            current_screen_rect = QRect(self.begin, self.end).normalized()
-            
-            if current_screen_rect.width() > 5 and current_screen_rect.height() > 5:
-                # 화면 좌표 -> 원본 이미지 기준 고정 좌표 역산
-                orig_h, orig_w = self.main_window.cv_image.shape[:2]
-                rel_x1 = current_screen_rect.x() - render_rect.x()
-                rel_y1 = current_screen_rect.y() - render_rect.y()
-                
-                scale_x = orig_w / render_rect.width()
-                scale_y = orig_h / render_rect.height()
-                
-                orig_x = int(rel_x1 * scale_x)
-                orig_y = int(rel_y1 * scale_y)
-                orig_w_size = int(current_screen_rect.width() * scale_x)
-                orig_h_size = int(current_screen_rect.height() * scale_y)
-                
-                self.orig_image_rect = QRect(orig_x, orig_y, orig_w_size, orig_h_size)
-                print(f"🎯 영역 선택 완료 (원본 기준): X={orig_x}, Y={orig_y}, W={orig_w_size}, H={orig_h_size}")
+            self.calculate_orig_rect()
             self.update()
+
+    def calculate_orig_rect(self):
+        if not self.start_pos or not self.end_pos:
+            return
+        
+        scale_x, scale_y, offset_x, offset_y = self.get_scale_factors()
+        
+        # 캔버스 래핑 오프셋 보정
+        x1 = self.start_pos.x() - offset_x
+        y1 = self.start_pos.y() - offset_y
+        x2 = self.end_pos.x() - offset_x
+        y2 = self.end_pos.y() - offset_y
+        
+        # 정규화된 상자 구하기
+        rect = QRect(x1, y1, x2 - x1, y2 - y1).normalized()
+        
+        # 원본 해상도 좌표로 역산
+        orig_x = int(rect.x() * scale_x)
+        orig_y = int(rect.y() * scale_y)
+        orig_w = int(rect.width() * scale_x)
+        orig_h = int(rect.height() * scale_y)
+        
+        self.orig_image_rect = QRect(orig_x, orig_y, orig_w, orig_h)
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.main_window.cv_image is None:
-            return
-            
-        render_rect = self.get_image_render_rect()
-        painter = QPainter(self)
-        pen = QPen(QColor(0, 255, 0), 2, Qt.PenStyle.SolidLine)
-        painter.setPen(pen)
-        
-        if self.is_drawing:
-            rect = QRect(self.begin, self.end).normalized()
+        if self.is_drawing and self.start_pos and self.end_pos:
+            painter = QPainter(self)
+            pen = QPen(QColor(0, 255, 0), 2, Qt.DashLine)
+            painter.setPen(pen)
+            rect = QRect(self.start_pos, self.end_pos).normalized()
             painter.drawRect(rect)
-        elif not self.orig_image_rect.isEmpty():
-            orig_h, orig_w = self.main_window.cv_image.shape[:2]
-            scale_x = render_rect.width() / orig_w
-            scale_y = render_rect.height() / orig_h
-            
-            screen_x = render_rect.x() + int(self.orig_image_rect.x() * scale_x)
-            screen_y = render_rect.y() + int(self.orig_image_rect.y() * scale_y)
-            screen_w = int(self.orig_image_rect.width() * scale_x)
-            screen_h = int(self.orig_image_rect.height() * scale_y)
-            
-            painter.drawRect(QRect(screen_x, screen_y, screen_w, screen_h))
 
 
-# 2. 메인 윈도우 클래스
-class MainWindow(QMainWindow):
+class DigimonInspectorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Vision OCR Inspector (PaddleOCR)")
-        self.resize(1000, 600)
-        
-        main_layout = QHBoxLayout()
-        
-        # ================= [왼쪽 레이아웃] =================
-        left_layout = QVBoxLayout()
-        
-        self.image_label = ResizableImageLabel(self)
-        self.image_label.setText("여기에 이미지가 표시됩니다.\n아래 버튼을 눌러 이미지를 불러오세요.")
-        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setStyleSheet("border: 1px dashed #aaa; background-color: #f9f9f9;")
-        self.image_label.setMinimumSize(500, 400) 
-        left_layout.addWidget(self.image_label)
-        
-        self.btn_load = QPushButton("이미지 불러오기")
-        self.btn_load.clicked.connect(self.load_image)
-        left_layout.addWidget(self.btn_load)
-        
-        left_widget = QWidget()
-        left_widget.setLayout(left_layout)
-        main_layout.addWidget(left_widget, stretch=3)
-        
-        # ================= [오른쪽 레이아웃] =================
-        right_layout = QVBoxLayout()
-        right_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        
-        panel_title = QLabel("=== 검사 항목 설정 ===")
-        panel_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        right_layout.addWidget(panel_title)
-        
-        mark_row_layout = QHBoxLayout()
-        
-        self.btn_register_mark = QPushButton("식별 마크 등록")
-        self.btn_register_mark.clicked.connect(self.register_and_ocr_mark)
-        mark_row_layout.addWidget(self.btn_register_mark)
-        
-        self.lbl_mark_result = QLabel("읽은 글자: (대기 중)")
-        self.lbl_mark_result.setStyleSheet("color: #0055ff; font-weight: bold; padding-left: 10px;")
-        mark_row_layout.addWidget(self.lbl_mark_result)
-        
-        mark_row_widget = QWidget()
-        mark_row_widget.setLayout(mark_row_layout)
-        right_layout.addWidget(mark_row_widget)
-        
-        right_widget = QWidget()
-        right_widget.setLayout(right_layout)
-        right_widget.setStyleSheet("background-color: #f0f0f0; border-left: 1px solid #ccc;")
-        main_layout.addWidget(right_widget, stretch=1)
-        
-        container = QWidget()
-        container.setLayout(main_layout)
-        self.setCentralWidget(container)
-        
-        # 이미지 데이터 변수
-        self.cv_image = None
-        self.orig_pixmap = None
-        
-        # 내부 저장용 변수
-        self.saved_mark_rect = None
-        self.saved_mark_text = ""
-        
-        # 👑 PaddleOCR 엔진 최초 초기화 (한글/영어 동시 지원 모드)
+        self.setWindowTitle("디지몬 스크린샷 멀티 인스펙터")
+        self.setGeometry(100, 100, 1200, 700)
+
+        # 데이터 보관용 멀티 리스트 (배열)
+        self.ocr_zones = []  # 구조: [{'rect': (x,y,w,h), 'text': '성숙기'}]
+
+        # AI 엔진 초기화 (회전 완벽 차단 옵션 고정)
         print("🤖 PaddleOCR 엔진 초기화 중...")
-        # lang='korean'으로 지정하면 기본적으로 영어도 내장해서 함께 읽어옵니다.
         self.ocr_engine = PaddleOCR(
-            lang='korean', 
-            enable_mkldnn=False,
-            use_textline_orientation=False,  # 👈 회전 검사 원천 차단!
-            use_doc_orientation_classify=False,
+            lang='korean', enable_mkldnn=False,
+            use_angle_cls=False, use_doc_orientation_classify=False
         )
         print("🤖 PaddleOCR 준비 완료!")
 
-    def load_image(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "이미지 선택", "", "Image Files (*.png *.jpg *.jpeg *.webp *.bmp)"
-        )
-        if file_path:
-            try:
-                file_bytes = np.fromfile(file_path, np.uint8)
-                self.cv_image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            except Exception as e:
-                self.image_label.setText(f"이미지 로딩 중 오류 발생: {e}")
-                return
-            
-            if self.cv_image is not None:
-                rgb_image = cv2.cvtColor(self.cv_image, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb_image.shape
-                bytes_per_line = ch * w
-                
-                q_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-                self.orig_pixmap = QPixmap.fromImage(q_img)
-                
-                self.image_label.orig_image_rect = QRect() 
-                self.lbl_mark_result.setText("읽은 글자: (대기 중)")
-                self.update_image_display()
+        self.cv_image = None
+        self.init_ui()
 
-    def update_image_display(self):
-        if self.orig_pixmap is not None:
-            scaled_pixmap = self.orig_pixmap.scaled(
-                self.image_label.width() - 20, 
-                self.image_label.height() - 20, 
-                Qt.AspectRatioMode.KeepAspectRatio, 
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.image_label.setPixmap(scaled_pixmap)
+    def init_ui(self):
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QHBoxLayout(main_widget)
 
-    def register_and_ocr_mark(self):
-        rect = self.image_label.orig_image_rect
+        # 왼쪽: 이미지 뷰어 레이아웃
+        left_layout = QVBoxLayout()
+        self.image_label = ScalableImageLabel()
+        self.image_label.setStyleSheet("background-color: #222; border: 1px solid #444;")
+        self.image_label.setAlignment(Qt.AlignCenter)
+        left_layout.addWidget(self.image_label, stretch=4)
+
+        # 컨트롤 버튼 구역
+        btn_layout = QHBoxLayout()
+        self.btn_load = QPushButton("🖼️ 스크린샷 불러오기")
+        self.btn_load.clicked.connect(self.load_image)
+        self.btn_add_zone = QPushButton("🎯 드래그 구역 리스트에 추가")
+        self.btn_add_zone.clicked.connect(self.ocr_and_add_list)
+        self.btn_clear = QPushButton("🗑️ 전체 비우기")
+        self.btn_clear.clicked.connect(self.clear_all_data)
         
+        btn_layout.addWidget(self.btn_load)
+        btn_layout.addWidget(self.btn_add_zone)
+        btn_layout.addWidget(self.btn_clear)
+        left_layout.addLayout(btn_layout)
+        
+        main_layout.addLayout(left_layout, stretch=3)
+
+        # 오른쪽: 그리드(표) 레이아웃
+        right_layout = QVBoxLayout()
+        
+        lbl_table_title = QLabel("📋 OCR 구역별 매칭 리스트 (그리드)")
+        lbl_table_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        right_layout.addWidget(lbl_table_title)
+
+        # QTableWidget을 이용하여 그리드 표 구성
+        self.table_widget = QTableWidget()
+        self.table_widget.setColumnCount(3)
+        self.table_widget.setHorizontalHeaderLabels(["No.", "자른 좌표 (X, Y, W, H)", "OCR 판정 결과"])
+        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table_widget.setEditTriggers(QTableWidget.NoEditTriggers) # 수정 금지
+        
+        right_layout.addWidget(self.table_widget)
+        
+        # 임시 Supabase 연동용 버튼 (자리 배치)
+        self.btn_submit_db = QPushButton("🚀 이 그리드 리스트 전체를 Supabase DB로 전송")
+        self.btn_submit_db.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; height: 35px;")
+        right_layout.addWidget(self.btn_submit_db)
+
+        main_layout.addLayout(right_layout, stretch=2)
+
+    def load_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "이미지 선택", "", "Image Files (*.png *.jpg *.jpeg *.bmp)")
+        if file_path:
+            file_bytes = np.fromfile(file_path, np.uint8)
+            self.cv_image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            self.image_label.set_opencv_image(self.cv_image)
+            self.clear_all_data()
+
+    def ocr_and_add_list(self):
+        rect = self.image_label.orig_image_rect
         if self.cv_image is None or rect.isEmpty():
-            self.lbl_mark_result.setText("읽은 글자: 이미지나 영역을 확인하세요.")
             return
-            
-        # 1. 안전 마진(Padding) 자동 부여
+
+        # 1. 안전 마진 적용 및 자르기
         orig_h, orig_w = self.cv_image.shape[:2]
         padding = 10
-        
         x1 = max(0, rect.x() - padding)
         y1 = max(0, rect.y() - padding)
         x2 = min(orig_w, rect.x() + rect.width() + padding)
         y2 = min(orig_h, rect.y() + rect.height() + padding)
         
         crop_img = self.cv_image[y1:y2, x1:x2]
-        
-        if crop_img.size == 0:
-            return
-            
-        # 2. 💡 [강력 전처리] 3배 확대 + 자모음 분리를 위한 침식 연산
+        if crop_img.size == 0: return
+
+        # 2. 고화질 보정 전처리
         crop_img = cv2.resize(crop_img, (0, 0), fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
-        
         gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-        
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         eroded = cv2.erode(binary, kernel, iterations=1)
-        
-        # ⭐ [핵심 해결책] 1채널 흑백 이미지를 PaddleOCR이 좋아하는 3채널(RGB) 형태로 복원 가공!
         crop_img = cv2.cvtColor(eroded, cv2.COLOR_GRAY2BGR)
-            
-        # 디버깅용 파일 세이브
-        cv2.imwrite("debug_crop.png", crop_img)
-            
-        self.lbl_mark_result.setText("읽은 글자: OCR 인식 중...")
-        QApplication.processEvents() 
-        
+
         text_outputs = []
         try:
-            # 3. PaddleOCR 실행 (회전 방지 플래그 상시 유지)
+            # 3. OCR 실행
             ocr_results = self.ocr_engine.predict(crop_img)
-            
-            # 4. 인덱스 에러를 방지하는 철통 방어 파싱
             if ocr_results:
                 for res in ocr_results:
-                    if isinstance(res, dict):
-                        if 'rec_texts' in res and res['rec_texts']:
-                            text_outputs.extend(res['rec_texts'])
+                    if isinstance(res, dict) and 'rec_texts' in res:
+                        text_outputs.extend(res['rec_texts'])
                     elif hasattr(res, 'rec_texts'):
-                        texts = getattr(res, 'rec_texts', [])
-                        if texts:
-                            text_outputs.extend(texts)
+                        text_outputs.extend(getattr(res, 'rec_texts', []))
             
-            final_text = " ".join(text_outputs).strip()
+            raw_text = " ".join(text_outputs).strip()
             
+            # 공백을 제거하고 순수 글자만 비교
+            clean_text = raw_text.replace(" ", "")
+            
+            # 1단계 꼼수: '유년기'라는 단어가 포착되었다면 뒤에 붙은 잔상으로 강제 판정
+            if "유년기" in clean_text:
+                # '유년기' 텍스트 뒤에 붙은 글자들을 추출 (예: '유년기||' -> '||')
+                suffix = clean_text.split("유년기")[-1]
+                
+                if len(suffix) >= 2:  # 뒤에 2글자 이상 붙어있으면 (II, 11, ll 등)
+                    final_text = "유년기2"
+                    print(f"🔮 유년기 꼼수 알고리즘 발동: '{raw_text}' ──> '유년기2'")
+                else:  # 뒤에 1글자만 붙어있거나 없으면 (I, 1, l 등)
+                    final_text = "유년기1"
+                    print(f"🔮 유년기 꼼수 알고리즘 발동: '{raw_text}' ──> '유년기1'")
+            else:
+                # 4. 💡 진화단계 및 속성 타겟 마스터 사전 자동 보정
+                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "백신", "데이터", "바이러스", "프리", "NO DATA", " 배리어블"]
+                
+                if raw_text in DIGIMON_STAGE_DICT:
+                    final_text = raw_text
+                else:
+                    close_matches = difflib.get_close_matches(raw_text, DIGIMON_STAGE_DICT, n=1, cutoff=0.3)
+                    final_text = close_matches[0] if close_matches else raw_text
+
         except Exception as e:
             print(f"❌ OCR 에러: {e}")
-            final_text = "(엔진 오류)"
-        
-        if not final_text:
-            final_text = "(글자 인식 실패)"
-            
-        # 5. 내부 변수 보관 및 UI 반영
-        self.saved_mark_rect = (rect.x(), rect.y(), rect.width(), rect.height())
-        self.saved_mark_text = final_text
-        self.lbl_mark_result.setText(f"읽은 글자: {final_text}")
-        print(f"🔒 마크 등록 완료: '{final_text}'")
+            final_text = "(인식 에러)"
 
-    def resizeEvent(self, event):
-        if self.orig_pixmap is not None:
-            self.update_image_display()
-        super().resizeEvent(event)
+        if not final_text: final_text = "(글자 없음)"
+
+        # 5. 내부 리스트 배열에 누적 저장
+        zone_info = {
+            'rect': (rect.x(), rect.y(), rect.width(), rect.height()),
+            'text': final_text
+        }
+        self.ocr_zones.append(zone_info)
+
+        # 6. 그리드(표) UI 상에 행 추가 반영
+        self.refresh_table_ui()
+
+    def refresh_table_ui(self):
+        self.table_widget.setRowCount(0) # 리셋 후 다시 그리기
+        for idx, zone in enumerate(self.ocr_zones):
+            row = self.table_widget.rowCount()
+            self.table_widget.insertRow(row)
+            
+            # 컬럼 삽입
+            self.table_widget.setItem(row, 0, QTableWidgetItem(str(idx + 1)))
+            self.table_widget.setItem(row, 1, QTableWidgetItem(str(zone['rect'])))
+            
+            # 결과 아이템 강조 스타일 적용
+            res_item = QTableWidgetItem(zone['text'])
+            res_item.setTextAlignment(Qt.AlignCenter)
+            res_item.setForeground(QColor(0, 102, 204)) # 파란색 글씨 강조
+            self.table_widget.setItem(row, 2, res_item)
+
+    def clear_all_data(self):
+        self.ocr_zones.clear()
+        self.table_widget.setRowCount(0)
+        print("🗑️ 모든 등록 구역 데이터가 초기화되었습니다.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = MainWindow()
+    window = DigimonInspectorWindow()
     window.show()
-    sys.exit(app.exec())
+    sys.exit(app.exec_())
