@@ -3,7 +3,7 @@ import os
 import cv2
 import difflib
 import numpy as np
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, 
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox,
                              QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt, QRect
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
@@ -173,16 +173,16 @@ class DigimonInspectorWindow(QMainWindow):
 
         # QTableWidget을 이용하여 그리드 표 구성
         self.table_widget = QTableWidget()
-        self.table_widget.setColumnCount(3)
-        self.table_widget.setHorizontalHeaderLabels(["No.", "자른 좌표 (X, Y, W, H)", "OCR 판정 결과"])
+        self.table_widget.setColumnCount(4)
+        self.table_widget.setHorizontalHeaderLabels(["No.", "DB 필드명", "자른 좌표 (X, Y, W, H)", "OCR 판정 결과"])
         self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_widget.setEditTriggers(QTableWidget.NoEditTriggers) # 수정 금지
         
         right_layout.addWidget(self.table_widget)
         
         # 임시 Supabase 연동용 버튼 (자리 배치)
         self.btn_submit_db = QPushButton("🚀 이 그리드 리스트 전체를 Supabase DB로 전송")
         self.btn_submit_db.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; height: 35px;")
+        self.btn_submit_db.clicked.connect(self.debug_final_payload) 
         right_layout.addWidget(self.btn_submit_db)
 
         main_layout.addLayout(right_layout, stretch=2)
@@ -265,7 +265,8 @@ class DigimonInspectorWindow(QMainWindow):
         # 5. 내부 리스트 배열에 누적 저장
         zone_info = {
             'rect': (rect.x(), rect.y(), rect.width(), rect.height()),
-            'text': final_text
+            'text': final_text,
+            'field': 'stage',
         }
         self.ocr_zones.append(zone_info)
 
@@ -280,13 +281,36 @@ class DigimonInspectorWindow(QMainWindow):
             
             # 컬럼 삽입
             self.table_widget.setItem(row, 0, QTableWidgetItem(str(idx + 1)))
-            self.table_widget.setItem(row, 1, QTableWidgetItem(str(zone['rect'])))
+
+            # DB 필드명 선택용 콤보 박스
+            combo = QComboBox()
+            combo.addItems(["stage (진화단계)", "attribute (속성)", "etc_mark (기타마크)"])
+            
+            # 기존에 선택되어 있던 값이 있다면 인덱스 복원 맞춤
+            if zone['field'] == 'stage': combo.setCurrentIndex(0)
+            elif zone['field'] == 'attribute': combo.setCurrentIndex(1)
+            elif zone['field'] == 'etc_mark': combo.setCurrentIndex(2)
+
+            # 유저가 드롭다운을 바꿀 때마다 메모리(self.ocr_zones) 값도 실시간 싱크 동기화
+            combo.currentIndexChanged.connect(lambda index, r=row: self.update_field_data(r, index))
+            self.table_widget.setCellWidget(row, 1, combo)
+
+            # 2번 열: 좌표
+            self.table_widget.setItem(row, 2, QTableWidgetItem(str(zone['rect'])))
             
             # 결과 아이템 강조 스타일 적용
             res_item = QTableWidgetItem(zone['text'])
             res_item.setTextAlignment(Qt.AlignCenter)
             res_item.setForeground(QColor(0, 102, 204)) # 파란색 글씨 강조
-            self.table_widget.setItem(row, 2, res_item)
+            self.table_widget.setItem(row, 3, res_item)
+    
+    # 🔍 전송 전, 최종 페이로드 데이터가 완벽한 구조인지 터미널에 뿌려보는 디버깅 함수
+    def debug_final_payload(self):
+        print("\n📦 === [READY TO SEND DB] 최종 적재 데이터 목록 ===")
+        for idx, zone in enumerate(self.ocr_zones):
+            print(f" [{idx+1}] 필드명: {zone['field']} | 데이터 값: {zone['text']} | 좌표: {zone['rect']}")
+        print("==================================================\n")
+        print("💡 위 데이터 구조가 그대로 Supabase에 한 줄로 깔끔하게 꽂히게 됩니다!")
 
     def clear_all_data(self):
         self.ocr_zones.clear()
