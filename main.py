@@ -59,25 +59,25 @@ class ScalableImageLabel(QLabel):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self.start_pos = event.pos()
-            self.start_scale_x = event.pos().x() / self.width()
-            self.start_scale_y = event.pos().y() / self.height()
+            self.start_pos = event.position()
+            self.start_scale_x = event.position().x() / self.width()
+            self.start_scale_y = event.position().y() / self.height()
 
             self.is_drawing = True
 
     def mouseMoveEvent(self, event):
         if self.is_drawing:
-            self.end_pos = event.pos()
-            self.end_scale_x = event.pos().x() / self.width()
-            self.end_scale_y = event.pos().y() / self.height()
+            self.end_pos = event.position()
+            self.end_scale_x = event.position().x() / self.width()
+            self.end_scale_y = event.position().y() / self.height()
 
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.is_drawing:
-            self.end_pos = event.pos()
-            self.end_scale_x = event.pos().x() / self.width()
-            self.end_scale_y = event.pos().y() / self.height()
+            self.end_pos = event.position()
+            self.end_scale_x = event.position().x() / self.width()
+            self.end_scale_y = event.position().y() / self.height()
 
             self.is_drawing = False
 
