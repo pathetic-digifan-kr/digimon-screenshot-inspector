@@ -3,9 +3,9 @@ import os
 import cv2
 import difflib
 import numpy as np
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox,
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox, QSizePolicy,
                              QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView)
-from PySide6.QtCore import Qt, QRect
+from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from paddleocr import PaddleOCR
 
@@ -18,101 +18,92 @@ os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
 class ScalableImageLabel(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setScaledContents(False)
         self.setMouseTracking(True)
         self.orig_pixmap = None
-        self.start_pos = None
-        self.end_pos = None
+
+        self.start_scale_x = 1
+        self.start_scale_y = 1
+        self.end_scale_x = 1
+        self.end_scale_y = 1
+
         self.is_drawing = False
-        self.orig_image_rect = QRect()
+        self.scale_rect = QRectF()
+        self.org_image = None
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
-    def set_opencv_image(self, cv_img):
+    def set_opencv_image(self, cv_img:cv2.Mat):
         # OpenCV BGR -> QImage RGB 변환 후 픽스맵 저장
-        h, w, ch = cv_img.shape
-        bytes_per_line = ch * w
-        q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-        self.orig_pixmap = QPixmap.fromImage(q_img)
-        self.update_pixmap()
-        
-    def update_pixmap(self):
-        if self.orig_pixmap is None:
+        self.org_image = cv_img
+        self.update_image()
+    
+    def update_image(self):
+        if self.org_image is None:
             return
+        rect = self.contentsRect()
+        resize_image = cv2.resize(self.org_image, (rect.width(), rect.height()), interpolation=cv2.INTER_LANCZOS4)
+        h, w, ch = resize_image.shape
+        byte_per_line = ch * w
 
-        scaled_pixmap = self.orig_pixmap.scaled(
-            self.width() - 20, 
-            self.height() - 20,
-            Qt.AspectRatioMode.KeepAspectRatio, 
-            Qt.TransformationMode.SmoothTransformation
+        image = QImage(
+            resize_image.data,
+            w,
+            h,
+            byte_per_line,
+            QImage.Format_BGR888
         )
-        self.setPixmap(scaled_pixmap)
+        self.setPixmap(QPixmap.fromImage(image))
 
     def resizeEvent(self, event):
-        if self.orig_pixmap is not None:
-            self.update_pixmap()
+        self.update_image()
         super().resizeEvent(event)
-
-    def get_scale_factors(self):
-        if not self.orig_pixmap or not self.pixmap():
-            return 1.0, 1.0, 0, 0
-        
-        orig_w = self.orig_pixmap.width()
-        orig_h = self.orig_pixmap.height()
-        disp_w = self.pixmap().width()
-        disp_h = self.pixmap().height()
-        
-        offset_x = (self.width() - disp_w) // 2
-        offset_y = (self.height() - disp_h) // 2
-        
-        scale_x = orig_w / disp_w
-        scale_y = orig_h / disp_h
-        return scale_x, scale_y, offset_x, offset_y
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.start_pos = event.pos()
+            self.start_scale_x = event.pos().x() / self.width()
+            self.start_scale_y = event.pos().y() / self.height()
+
             self.is_drawing = True
 
     def mouseMoveEvent(self, event):
         if self.is_drawing:
             self.end_pos = event.pos()
+            self.end_scale_x = event.pos().x() / self.width()
+            self.end_scale_y = event.pos().y() / self.height()
+
             self.update()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self.is_drawing:
             self.end_pos = event.pos()
-            self.is_drawing = False
-            self.calculate_orig_rect()
-            self.update()
+            self.end_scale_x = event.pos().x() / self.width()
+            self.end_scale_y = event.pos().y() / self.height()
 
-    def calculate_orig_rect(self):
-        if not self.start_pos or not self.end_pos:
-            return
-        
-        scale_x, scale_y, offset_x, offset_y = self.get_scale_factors()
-        
-        # 캔버스 래핑 오프셋 보정
-        x1 = self.start_pos.x() - offset_x
-        y1 = self.start_pos.y() - offset_y
-        x2 = self.end_pos.x() - offset_x
-        y2 = self.end_pos.y() - offset_y
-        
-        # 정규화된 상자 구하기
-        rect = QRect(x1, y1, x2 - x1, y2 - y1).normalized()
-        
-        # 원본 해상도 좌표로 역산
-        orig_x = int(rect.x() * scale_x)
-        orig_y = int(rect.y() * scale_y)
-        orig_w = int(rect.width() * scale_x)
-        orig_h = int(rect.height() * scale_y)
-        
-        self.orig_image_rect = QRect(orig_x, orig_y, orig_w, orig_h)
+            self.is_drawing = False
+
+            leftTop = QPointF(self.start_scale_x, self.start_scale_y)
+            rightBottom = QPointF(self.end_scale_x, self.end_scale_y)
+
+            self.scale_rect = QRectF(leftTop, rightBottom)
+            self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if self.start_pos and self.end_pos:
+        if self.start_scale_x != self.end_scale_x and self.start_scale_y != self.end_scale_y:
             painter = QPainter(self)
             pen = QPen(QColor(0, 255, 0), 2, Qt.DashLine)
             painter.setPen(pen)
-            rect = QRect(self.start_pos, self.end_pos).normalized()
+
+            left = self.start_scale_x * self.width()
+            top = self.start_scale_y * self.height()
+            right = self.end_scale_x * self.width()
+            bottom = self.end_scale_y * self.height()
+            
+            leftTop = QPoint(left, top)
+            rightBottom = QPoint(right, bottom)
+
+            rect = QRect(leftTop, rightBottom)
             painter.drawRect(rect)
 
 
@@ -196,17 +187,16 @@ class DigimonInspectorWindow(QMainWindow):
             self.clear_all_data()
 
     def ocr_and_add_list(self):
-        rect = self.image_label.orig_image_rect
+        rect = self.image_label.scale_rect
         if self.cv_image is None or rect.isEmpty():
             return
 
         # 1. 안전 마진 적용 및 자르기
         orig_h, orig_w = self.cv_image.shape[:2]
-        padding = 10
-        x1 = max(0, rect.x() - padding)
-        y1 = max(0, rect.y() - padding)
-        x2 = min(orig_w, rect.x() + rect.width() + padding)
-        y2 = min(orig_h, rect.y() + rect.height() + padding)
+        x1 = int(max(0, rect.x() * orig_w))
+        y1 = int(max(0, rect.y() * orig_h ))
+        x2 = int(min(orig_w, (rect.x() + rect.width()) * orig_w))
+        y2 = int(min(orig_h, (rect.y() + rect.height()) * orig_h))
         
         crop_img = self.cv_image[y1:y2, x1:x2]
         if crop_img.size == 0: return
