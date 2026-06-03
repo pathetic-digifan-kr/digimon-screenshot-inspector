@@ -20,7 +20,6 @@ class ScalableImageLabel(QLabel):
         super().__init__(parent)
         self.setScaledContents(False)
         self.setMouseTracking(True)
-        self.orig_pixmap = None
 
         self.start_scale_x = 1
         self.start_scale_y = 1
@@ -125,6 +124,8 @@ class DigimonInspectorWindow(QMainWindow):
         print("🤖 PaddleOCR 준비 완료!")
 
         self.cv_image = None
+        self.identifier_roi = QRectF(0,0 ,0 ,0)
+        self.lbl_identifier = QLabel()
         self.init_ui()
 
     def init_ui(self):
@@ -155,9 +156,22 @@ class DigimonInspectorWindow(QMainWindow):
         
         main_layout.addLayout(left_layout, stretch=3)
 
-        # 오른쪽: 그리드(표) 레이아웃
+        # 오른쪽: 설정 레이아웃
         right_layout = QVBoxLayout()
+
+        # 우측 상단 : 식별 레이아웃
+        idenfier_layout = QHBoxLayout()
+        lbl_identifier = QLabel("식별 영역")
+        lbl_identifier.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
+        btn_identifier = QPushButton("등록")
+        btn_identifier.clicked.connect(self.ocr_and_set_identifier)
+        idenfier_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        idenfier_layout.addWidget(lbl_identifier)
+        idenfier_layout.addWidget(btn_identifier)
+        idenfier_layout.addWidget(self.lbl_identifier)
+        right_layout.addLayout(idenfier_layout)
         
+        # 우측 중단 : 테이블 레이아웃
         lbl_table_title = QLabel("📋 OCR 구역별 매칭 리스트 (그리드)")
         lbl_table_title.setStyleSheet("font-weight: bold; font-size: 13px; color: #333;")
         right_layout.addWidget(lbl_table_title)
@@ -186,19 +200,17 @@ class DigimonInspectorWindow(QMainWindow):
             self.image_label.set_opencv_image(self.cv_image)
             self.clear_all_data()
 
-    def ocr_and_add_list(self):
-        rect = self.image_label.scale_rect
-        if self.cv_image is None or rect.isEmpty():
+    def ocr(self, image:cv2.Mat, rect:QRectF):
+        if image is None or rect.isEmpty():
             return
-
         # 1. 안전 마진 적용 및 자르기
-        orig_h, orig_w = self.cv_image.shape[:2]
+        orig_h, orig_w = image.shape[:2]
         x1 = int(max(0, rect.x() * orig_w))
         y1 = int(max(0, rect.y() * orig_h ))
         x2 = int(min(orig_w, (rect.x() + rect.width()) * orig_w))
         y2 = int(min(orig_h, (rect.y() + rect.height()) * orig_h))
         
-        crop_img = self.cv_image[y1:y2, x1:x2]
+        crop_img = image[y1:y2, x1:x2]
         if crop_img.size == 0: return
 
         # 2. 고화질 보정 전처리
@@ -251,6 +263,25 @@ class DigimonInspectorWindow(QMainWindow):
             final_text = "(인식 에러)"
 
         if not final_text: final_text = "(글자 없음)"
+
+        return final_text
+    
+    def ocr_and_set_identifier(self):
+        rect = self.image_label.scale_rect
+        if self.cv_image is None or rect.isEmpty():
+            return
+        
+        text = self.ocr(self.cv_image, rect)
+
+        self.identifier_roi = rect
+        self.lbl_identifier.setText(text)
+
+    def ocr_and_add_list(self):
+        rect = self.image_label.scale_rect
+        if self.cv_image is None or rect.isEmpty():
+            return
+
+        final_text = self.ocr(self.cv_image, rect)
 
         # 5. 내부 리스트 배열에 누적 저장
         zone_info = {
