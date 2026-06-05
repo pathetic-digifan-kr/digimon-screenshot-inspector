@@ -1,9 +1,11 @@
 import sys
 import os
+import re
 import cv2
 import difflib
 import numpy as np
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox, QSizePolicy,
+from pathlib import Path
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox, QSizePolicy, QLineEdit,
                              QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
@@ -126,6 +128,8 @@ class DigimonInspectorWindow(QMainWindow):
         self.cv_image = None
         self.identifier_roi = QRectF(0,0 ,0 ,0)
         self.lbl_identifier = QLabel()
+        self.edit_directory = QLineEdit()
+
         self.init_ui()
 
     def init_ui(self):
@@ -183,7 +187,16 @@ class DigimonInspectorWindow(QMainWindow):
         self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         
         right_layout.addWidget(self.table_widget)
-        
+
+        # 탐색 디렉토리 레이아웃
+        directory_layout = QHBoxLayout()
+        btn_directory = QPushButton("디렉토리 선택")
+        btn_directory.clicked.connect(self.select_directory)
+        directory_layout.addWidget(self.edit_directory, stretch=4)
+        directory_layout.addWidget(btn_directory, stretch=1)
+        right_layout.addLayout(directory_layout)
+
+
         # 임시 Supabase 연동용 버튼 (자리 배치)
         self.btn_submit_db = QPushButton("🚀 이 그리드 리스트 전체를 Supabase DB로 전송")
         self.btn_submit_db.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; height: 35px;")
@@ -199,6 +212,20 @@ class DigimonInspectorWindow(QMainWindow):
             self.cv_image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
             self.image_label.set_opencv_image(self.cv_image)
             self.clear_all_data()
+
+    def select_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "디렉토리 선택")
+        if directory:
+            self.edit_directory.setText(directory)
+    
+    def searchDirectory(self):
+        dir = Path(self.edit_directory.text())
+        pattern = re.compile(r"^(\d+)\.\s*(.+)")
+        for digimon_dir in dir.iterdir():
+            m = pattern.match(digimon_dir.name)
+            if m:
+                print(f'{m.group(1)}번 : {m.group(2)}')
+
 
     def ocr(self, image:cv2.Mat, rect:QRectF):
         if image is None or rect.isEmpty():
@@ -327,6 +354,7 @@ class DigimonInspectorWindow(QMainWindow):
     
     # 🔍 전송 전, 최종 페이로드 데이터가 완벽한 구조인지 터미널에 뿌려보는 디버깅 함수
     def debug_final_payload(self):
+        self.searchDirectory()
         print("\n📦 === [READY TO SEND DB] 최종 적재 데이터 목록 ===")
         for idx, zone in enumerate(self.ocr_zones):
             print(f" [{idx+1}] 필드명: {zone['field']} | 데이터 값: {zone['text']} | 좌표: {zone['rect']}")
