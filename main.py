@@ -11,11 +11,16 @@ from PySide6.QtCore import Qt, QRect, QRectF, QPoint, QPointF
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QImage
 from paddleocr import PaddleOCR
 
+import paddle
+
 # 💡 최신 PaddlePaddle / PaddleX oneDNN 가속 버그 완벽 차단 플래그
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["FLAGS_use_onednn"] = "0"
 os.environ["FLAGS_use_mkldnn"] = "0"
 os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] = "0"
+
+print("CUDA 지원:", paddle.is_compiled_with_cuda())
+print("장치:", paddle.device.get_device())
 
 class ScalableImageLabel(QLabel):
     def __init__(self, parent=None):
@@ -222,10 +227,28 @@ class DigimonInspectorWindow(QMainWindow):
         dir = Path(self.edit_directory.text())
         pattern = re.compile(r"^(\d+)\.\s*(.+)")
         for digimon_dir in dir.iterdir():
+
+            # 디렉토리 이름 형식 #.디지몬이름
             m = pattern.match(digimon_dir.name)
             if m:
                 print(f'{m.group(1)}번 : {m.group(2)}')
+                jpg_files = [
+                    f for f in digimon_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() == '.jpg'
+                ]
 
+                # jpg 파일 목록 탐색
+                for jpg in jpg_files:
+                    if self.is_valid_image(jpg):
+                        print(jpg)
+                        break
+    
+    def is_valid_image(self, image_file):
+        file_bytes = np.fromfile(image_file, np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        identifier = self.ocr(image, self.identifier_roi)
+
+        return self.lbl_identifier.text() == identifier
 
     def ocr(self, image:cv2.Mat, rect:QRectF):
         if image is None or rect.isEmpty():
