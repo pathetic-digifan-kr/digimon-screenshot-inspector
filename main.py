@@ -240,7 +240,7 @@ class DigimonInspectorWindow(QMainWindow):
                 # jpg 파일 목록 탐색
                 for jpg in jpg_files:
                     if self.is_valid_image(jpg):
-                        print(jpg)
+                        self.ocr_regions(jpg)
                         break
     
     def is_valid_image(self, image_file):
@@ -249,6 +249,15 @@ class DigimonInspectorWindow(QMainWindow):
         identifier = self.ocr(image, self.identifier_roi)
 
         return self.lbl_identifier.text() == identifier
+    
+    def ocr_regions(self, image_file):
+        file_bytes = np.fromfile(image_file, np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+        for idx, zone in enumerate(self.ocr_zones):
+            field_name = zone['field']
+            text = self.ocr(image, zone['rect'])
+            print(f'{field_name}: {text}')
 
     def ocr(self, image:cv2.Mat, rect:QRectF):
         if image is None or rect.isEmpty():
@@ -300,7 +309,7 @@ class DigimonInspectorWindow(QMainWindow):
                     print(f"🔮 유년기 꼼수 알고리즘 발동: '{raw_text}' ──> '유년기1'")
             else:
                 # 4. 💡 진화단계 및 속성 타겟 마스터 사전 자동 보정
-                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "백신", "데이터", "바이러스", "프리", "NO DATA", " 배리어블"]
+                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "아머체", "하이브리드체", "백신", "데이터", "바이러스", "프리", "NO DATA", " 배리어블"]
                 
                 if raw_text in DIGIMON_STAGE_DICT:
                     final_text = raw_text
@@ -335,7 +344,7 @@ class DigimonInspectorWindow(QMainWindow):
 
         # 5. 내부 리스트 배열에 누적 저장
         zone_info = {
-            'rect': (rect.x(), rect.y(), rect.width(), rect.height()),
+            'rect': rect,
             'text': final_text,
             'field': 'stage',
         }
