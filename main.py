@@ -240,7 +240,9 @@ class DigimonInspectorWindow(QMainWindow):
                 # jpg 파일 목록 탐색
                 for jpg in jpg_files:
                     if self.is_valid_image(jpg):
-                        self.ocr_regions(jpg)
+                        #self.save_webp(jpg, f"image/{m.group(1)}.webp")
+                        ret = self.ocr_regions(jpg)
+                        print(f"✅ {jpg.name} - OCR 결과: {ret}")
                         break
     
     def is_valid_image(self, image_file):
@@ -250,14 +252,22 @@ class DigimonInspectorWindow(QMainWindow):
 
         return self.lbl_identifier.text() == identifier
     
+    def save_webp(self, image_file, target_path):
+        file_bytes = np.fromfile(image_file, np.uint8)
+        image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        cv2.imwrite(target_path, image, [cv2.IMWRITE_WEBP_QUALITY, 100])
+        return target_path
+    
     def ocr_regions(self, image_file):
         file_bytes = np.fromfile(image_file, np.uint8)
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
+        items = []
         for idx, zone in enumerate(self.ocr_zones):
             field_name = zone['field']
             text = self.ocr(image, zone['rect'])
-            print(f'{field_name}: {text}')
+            items.append((field_name, text))
+        return items
 
     def ocr(self, image:cv2.Mat, rect:QRectF):
         if image is None or rect.isEmpty():
@@ -346,12 +356,18 @@ class DigimonInspectorWindow(QMainWindow):
         zone_info = {
             'rect': rect,
             'text': final_text,
-            'field': 'stage',
+            'field': 'generation',
         }
         self.ocr_zones.append(zone_info)
 
         # 6. 그리드(표) UI 상에 행 추가 반영
         self.refresh_table_ui()
+
+    def update_field_data(self, row, index):
+        if 0 <= row < len(self.ocr_zones):
+            field_mapping = {0: 'generation', 1: 'attribute', 2: 'etc_mark'}
+            self.ocr_zones[row]['field'] = field_mapping.get(index, 'generation')
+            print(f"🔄 Row {row+1} DB 필드명이 '{self.ocr_zones[row]['field']}'(으)로 변경되었습니다.")
 
     def refresh_table_ui(self):
         self.table_widget.setRowCount(0) # 리셋 후 다시 그리기
@@ -364,10 +380,10 @@ class DigimonInspectorWindow(QMainWindow):
 
             # DB 필드명 선택용 콤보 박스
             combo = QComboBox()
-            combo.addItems(["stage (진화단계)", "attribute (속성)", "etc_mark (기타마크)"])
+            combo.addItems(["generation (진화단계)", "attribute (속성)", "etc_mark (기타마크)"])
             
             # 기존에 선택되어 있던 값이 있다면 인덱스 복원 맞춤
-            if zone['field'] == 'stage': combo.setCurrentIndex(0)
+            if zone['field'] == 'generation': combo.setCurrentIndex(0)
             elif zone['field'] == 'attribute': combo.setCurrentIndex(1)
             elif zone['field'] == 'etc_mark': combo.setCurrentIndex(2)
 
@@ -386,7 +402,7 @@ class DigimonInspectorWindow(QMainWindow):
     
     # 🔍 전송 전, 최종 페이로드 데이터가 완벽한 구조인지 터미널에 뿌려보는 디버깅 함수
     def debug_final_payload(self):
-        self.searchDirectory()
+        #self.searchDirectory()
         print("\n📦 === [READY TO SEND DB] 최종 적재 데이터 목록 ===")
         for idx, zone in enumerate(self.ocr_zones):
             print(f" [{idx+1}] 필드명: {zone['field']} | 데이터 값: {zone['text']} | 좌표: {zone['rect']}")
