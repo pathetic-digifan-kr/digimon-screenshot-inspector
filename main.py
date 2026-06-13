@@ -4,6 +4,7 @@ import re
 import cv2
 import difflib
 import numpy as np
+from digimon_db import digimon_db
 from pathlib import Path
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QComboBox, QSizePolicy, QLineEdit,
                              QPushButton, QVBoxLayout, QHBoxLayout, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView)
@@ -135,7 +136,25 @@ class DigimonInspectorWindow(QMainWindow):
         self.lbl_identifier = QLabel()
         self.edit_directory = QLineEdit()
 
+        self.digimon_db = digimon_db()
+        self.digimon_db.connect()
+
+        self.load_generations()
+        self.load_attributes()
+
         self.init_ui()
+
+    def load_generations(self):
+        locale = "ko"
+        self.generations = self.digimon_db.load_generations(locale)
+        self.generations = {gen['name']: gen['id'] for gen in self.generations}
+        print(self.generations)
+    
+    def load_attributes(self):
+        locale = "ko"
+        self.attributes = self.digimon_db.load_attributes(locale)
+        self.attributes = {attr['name']: attr['id'] for attr in self.attributes}
+        print(self.attributes)
 
     def init_ui(self):
         main_widget = QWidget()
@@ -243,6 +262,21 @@ class DigimonInspectorWindow(QMainWindow):
                         #self.save_webp(jpg, f"image/{m.group(1)}.webp")
                         ret = self.ocr_regions(jpg)
                         print(f"✅ {jpg.name} - OCR 결과: {ret}")
+
+                        print(f"🔍 OCR로 추출된 진화단계: '{ret['generation']}' | 속성: '{ret['attribute']}'")
+
+                        # 도감 이미지 저장
+                        webp_name = f"{m.group(1)}.webp"
+                        webp_full_name =f"image/{m.group(1)}.webp"
+                        self.save_webp(jpg, webp_full_name)
+                        
+                        # # 도감 이미지 업로드
+                        file_url  = self.digimon_db.upload_digimon_profile_image(webp_full_name, webp_name)
+                        self.digimon_db.update_digimon_profile_image(int(m.group(1)), file_url)
+                        self.digimon_db.insert_digimon_name_translation(int(m.group(1)), "ko", m.group(2))
+
+                        self.digimon_db.update_digimon_profile_generation(int(m.group(1)), self.generations.get(ret['generation'], None))
+                        self.digimon_db.update_digimon_profile_attribute(int(m.group(1)), self.attributes.get(ret['attribute'], None))
                         break
     
     def is_valid_image(self, image_file):
@@ -262,12 +296,15 @@ class DigimonInspectorWindow(QMainWindow):
         file_bytes = np.fromfile(image_file, np.uint8)
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-        items = []
+        result = {
+            'generation': None,
+            'attribute': None,
+        }
         for idx, zone in enumerate(self.ocr_zones):
             field_name = zone['field']
             text = self.ocr(image, zone['rect'])
-            items.append((field_name, text))
-        return items
+            result[field_name] = text
+        return result
 
     def ocr(self, image:cv2.Mat, rect:QRectF):
         if image is None or rect.isEmpty():
@@ -319,7 +356,7 @@ class DigimonInspectorWindow(QMainWindow):
                     print(f"🔮 유년기 꼼수 알고리즘 발동: '{raw_text}' ──> '유년기1'")
             else:
                 # 4. 💡 진화단계 및 속성 타겟 마스터 사전 자동 보정
-                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "아머체", "하이브리드체", "백신", "데이터", "바이러스", "프리", "NO DATA", " 배리어블"]
+                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "아머체", "하이브리드체", "백신", "데이터", "바이러스", "프리", "NO DATA", "배리어블", "종족불명"]
                 
                 if raw_text in DIGIMON_STAGE_DICT:
                     final_text = raw_text
@@ -402,7 +439,7 @@ class DigimonInspectorWindow(QMainWindow):
     
     # 🔍 전송 전, 최종 페이로드 데이터가 완벽한 구조인지 터미널에 뿌려보는 디버깅 함수
     def debug_final_payload(self):
-        #self.searchDirectory()
+        self.searchDirectory()
         print("\n📦 === [READY TO SEND DB] 최종 적재 데이터 목록 ===")
         for idx, zone in enumerate(self.ocr_zones):
             print(f" [{idx+1}] 필드명: {zone['field']} | 데이터 값: {zone['text']} | 좌표: {zone['rect']}")
@@ -413,6 +450,11 @@ class DigimonInspectorWindow(QMainWindow):
         self.ocr_zones.clear()
         self.table_widget.setRowCount(0)
         print("🗑️ 모든 등록 구역 데이터가 초기화되었습니다.")
+
+    def closeEvent(self, event):
+        print('애플리케이션 종료')
+        self.digimon_db.disconnect()
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
