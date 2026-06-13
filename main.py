@@ -356,7 +356,7 @@ class DigimonInspectorWindow(QMainWindow):
                     print(f"🔮 유년기 꼼수 알고리즘 발동: '{raw_text}' ──> '유년기1'")
             else:
                 # 4. 💡 진화단계 및 속성 타겟 마스터 사전 자동 보정
-                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "아머체", "하이브리드체", "백신", "데이터", "바이러스", "프리", "NO DATA", "배리어블", "종족불명"]
+                DIGIMON_STAGE_DICT = ["스테이터스", "유년기1", "유년기2", "성장기", "성숙기", "완전체", "궁극체", "초궁극체", "아머체", "하이브리드체", "백신", "데이터", "바이러스", "프리", "NO DATA", "배리어블", "불명"]
                 
                 if raw_text in DIGIMON_STAGE_DICT:
                     final_text = raw_text
